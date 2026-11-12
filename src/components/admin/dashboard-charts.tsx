@@ -28,7 +28,11 @@ export function MonthlyCirculationChart({
 }) {
   return (
     <div className="h-64 w-full">
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer
+        width="100%"
+        height="100%"
+        initialDimension={{ width: 480, height: 256 }}
+      >
         <BarChart data={data} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
           <XAxis dataKey="month" tickLine={false} axisLine={false} fontSize={12} stroke="#64748b" />
@@ -48,7 +52,11 @@ const pieColors = ["#1d4ed8", "#0ea5e9", "#10b981", "#f59e0b", "#8b5cf6", "#ef44
 export function CategoryPieChart({ data }: { data: { name: string; value: number }[] }) {
   return (
     <div className="h-64 w-full">
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer
+        width="100%"
+        height="100%"
+        initialDimension={{ width: 480, height: 256 }}
+      >
         <PieChart>
           <Pie
             data={data}
@@ -74,7 +82,11 @@ export function CategoryPieChart({ data }: { data: { name: string; value: number
 export function CourseIssueChart({ data }: { data: { name: string; issued: number }[] }) {
   return (
     <div className="h-64 w-full">
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer
+        width="100%"
+        height="100%"
+        initialDimension={{ width: 480, height: 256 }}
+      >
         <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
           <XAxis type="number" tickLine={false} axisLine={false} fontSize={12} stroke="#64748b" allowDecimals={false} />
