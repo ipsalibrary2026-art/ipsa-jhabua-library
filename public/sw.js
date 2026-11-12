@@ -1,4 +1,4 @@
-const CACHE_NAME = "ipsa-library-v1";
+const CACHE_NAME = "ipsa-library-v2";
 const APP_SHELL = [
   "/",
   "/login",

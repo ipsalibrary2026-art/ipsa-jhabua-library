@@ -52,7 +52,7 @@ export function AdminLoginForm({ initialError }: { initialError?: string }) {
 
   return (
     <div className="space-y-6">
-      <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+      <form method="post" onSubmit={handleSubmit} className="space-y-5" noValidate>
         {error ? (
           <div
             role="alert"
