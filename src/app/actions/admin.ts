@@ -2,10 +2,16 @@
 
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
-import type { ActionResult, BookInput, IssueInput, StudentInput } from "@/lib/action-types";
+import type {
+  ActionResult,
+  BookInput,
+  IssueInput,
+  NewBookIssueInput,
+  StudentInput,
+} from "@/lib/action-types";
 import { writeAuditLog } from "@/lib/audit";
 import { todayISO } from "@/lib/dates";
 import { auth } from "@/lib/db/auth";
@@ -13,6 +19,7 @@ import { db } from "@/lib/db";
 import { session as authSession, user } from "@/lib/db/auth-schema";
 import {
   admins,
+  bookCopies,
   books,
   courses,
   issueRecords,
@@ -60,13 +67,19 @@ const bookSchema = z.object({
   publisher: z.string().trim().min(2, "Enter the publisher.").max(160),
   edition: z.string().trim().min(1, "Enter the edition.").max(40),
   category: z.string().trim().min(1, "Enter a category.").max(80),
-  totalCopies: z.coerce.number().int().min(1, "Add at least one copy.").max(999),
   shelfNumber: z.string().trim().min(1, "Enter the shelf or rack number.").max(40),
 });
 
 const issueSchema = z.object({
   collegeCode: z.string().trim().min(1, "Enter the student's college code.").max(30),
-  bookId: z.string().uuid("Select a book."),
+  copyId: z.string().uuid("Select an available book copy."),
+  issueDate: dateSchema,
+  dueDate: dateSchema,
+  notes: z.string().trim().max(500).optional(),
+});
+
+const newBookIssueSchema = bookSchema.extend({
+  collegeCode: z.string().trim().min(1, "Enter the student's college code.").max(30),
   issueDate: dateSchema,
   dueDate: dateSchema,
   notes: z.string().trim().max(500).optional(),
@@ -520,33 +533,93 @@ export async function createBook(input: BookInput): Promise<ActionResult> {
     const data = parsed.data;
     const bookCode = data.bookCode.toUpperCase();
 
-    const existing = await db
-      .select({ id: books.id })
-      .from(books)
-      .where(eq(books.bookCode, bookCode))
-      .limit(1);
-    if (existing[0]) return fail("That Book ID is already in use.");
+    const result = await db.transaction(async (tx) => {
+      const duplicate = await tx
+        .select({ id: bookCopies.id })
+        .from(bookCopies)
+        .where(eq(bookCopies.copyCode, bookCode))
+        .limit(1);
+      if (duplicate[0]) throw new Error("That Book ID is already in use.");
 
-    const inserted = await db
-      .insert(books)
-      .values({
-        ...data,
-        bookCode,
-        availableCopies: data.totalCopies,
-      })
-      .returning({ id: books.id });
+      const matching = await tx
+        .select()
+        .from(books)
+        .where(
+          and(
+            isNull(books.archivedAt),
+            sql`lower(${books.title}) = lower(${data.title})`,
+            sql`lower(${books.author}) = lower(${data.author})`,
+            sql`lower(${books.edition}) = lower(${data.edition})`,
+          ),
+        )
+        .limit(1);
+
+      let bookId: string;
+      let title: string;
+      let reusedCatalogue = false;
+
+      if (matching[0]) {
+        reusedCatalogue = true;
+        bookId = matching[0].id;
+        title = matching[0].title;
+        await tx
+          .update(books)
+          .set({
+            totalCopies: sql`${books.totalCopies} + 1`,
+            availableCopies: sql`${books.availableCopies} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(books.id, bookId));
+      } else {
+        const inserted = await tx
+          .insert(books)
+          .values({
+            bookCode,
+            title: data.title,
+            author: data.author,
+            publisher: data.publisher,
+            edition: data.edition,
+            category: data.category,
+            totalCopies: 1,
+            availableCopies: 1,
+            shelfNumber: data.shelfNumber,
+          })
+          .returning({ id: books.id, title: books.title });
+        bookId = inserted[0].id;
+        title = inserted[0].title;
+      }
+
+      await tx.insert(bookCopies).values({
+        copyCode: bookCode,
+        bookId,
+        shelfNumber: data.shelfNumber,
+        status: "available",
+      });
+
+      return { bookId, title, reusedCatalogue };
+    });
 
     await writeAuditLog({
       actorUserId: admin.userId,
       actorName: admin.fullName,
       action: "book.create",
       entityType: "book",
-      entityId: inserted[0]?.id,
-      details: { bookCode, title: data.title, totalCopies: data.totalCopies },
+      entityId: result.bookId,
+      details: {
+        bookCode,
+        title: result.title,
+        reusedCatalogue: result.reusedCatalogue,
+      },
     });
 
     revalidateLibrary();
-    return { ok: true, message: `"${data.title}" added to the catalogue.` };
+    return {
+      ok: true,
+      message: result.reusedCatalogue
+        ? `Copy ${bookCode} registered under "${result.title}".`
+        : `"${result.title}" added to the catalogue.`,
+      id: result.bookId,
+    };
   } catch (error) {
     return fail(
       error instanceof Error ? error.message : "Could not add the book. Please try again.",
@@ -566,31 +639,50 @@ export async function updateBook(id: string, input: BookInput): Promise<ActionRe
     const book = existing[0];
     if (!book) return fail("Book not found.");
 
-    if (bookCode !== book.bookCode) {
+    const copyRows = await db
+      .select()
+      .from(bookCopies)
+      .where(eq(bookCopies.bookId, id))
+      .orderBy(asc(bookCopies.createdAt));
+    const primary = copyRows.find((copy) => copy.copyCode === book.bookCode) ?? copyRows[0];
+
+    if (bookCode !== book.bookCode || primary) {
       const duplicate = await db
-        .select({ id: books.id })
-        .from(books)
-        .where(eq(books.bookCode, bookCode))
+        .select({ id: bookCopies.id })
+        .from(bookCopies)
+        .where(eq(bookCopies.copyCode, bookCode))
         .limit(1);
-      if (duplicate[0] && duplicate[0].id !== id) return fail("That Book ID is already in use.");
+      if (duplicate[0] && duplicate[0].id !== primary?.id) {
+        return fail("That Book ID is already in use.");
+      }
     }
 
-    const issuedCopies = book.totalCopies - book.availableCopies;
-    if (data.totalCopies < issuedCopies) {
-      return fail(
-        `${issuedCopies} ${issuedCopies === 1 ? "copy is" : "copies are"} currently issued. Total copies cannot be lower than that.`,
-      );
-    }
+    await db.transaction(async (tx) => {
+      await tx
+        .update(books)
+        .set({
+          bookCode,
+          title: data.title,
+          author: data.author,
+          publisher: data.publisher,
+          edition: data.edition,
+          category: data.category,
+          shelfNumber: data.shelfNumber,
+          updatedAt: new Date(),
+        })
+        .where(eq(books.id, id));
 
-    await db
-      .update(books)
-      .set({
-        ...data,
-        bookCode,
-        availableCopies: data.totalCopies - issuedCopies,
-        updatedAt: new Date(),
-      })
-      .where(eq(books.id, id));
+      if (primary) {
+        await tx
+          .update(bookCopies)
+          .set({
+            copyCode: bookCode,
+            shelfNumber: data.shelfNumber,
+            updatedAt: new Date(),
+          })
+          .where(eq(bookCopies.id, primary.id));
+      }
+    });
 
     await writeAuditLog({
       actorUserId: admin.userId,
@@ -599,8 +691,8 @@ export async function updateBook(id: string, input: BookInput): Promise<ActionRe
       entityType: "book",
       entityId: id,
       details: {
-        before: { bookCode: book.bookCode, title: book.title, totalCopies: book.totalCopies },
-        after: { bookCode, title: data.title, totalCopies: data.totalCopies },
+        before: { bookCode: book.bookCode, title: book.title },
+        after: { bookCode, title: data.title },
       },
     });
 
@@ -626,12 +718,21 @@ export async function deleteBook(id: string): Promise<ActionResult> {
       .where(eq(issueRecords.bookId, id));
 
     if ((history[0]?.count ?? 0) > 0) {
-      await db
-        .update(books)
-        .set({ archivedAt: new Date(), updatedAt: new Date() })
-        .where(eq(books.id, id));
+      await db.transaction(async (tx) => {
+        await tx
+          .update(books)
+          .set({ archivedAt: new Date(), updatedAt: new Date() })
+          .where(eq(books.id, id));
+        await tx
+          .update(bookCopies)
+          .set({ archivedAt: new Date(), updatedAt: new Date() })
+          .where(eq(bookCopies.bookId, id));
+      });
     } else {
-      await db.delete(books).where(eq(books.id, id));
+      await db.transaction(async (tx) => {
+        await tx.delete(bookCopies).where(eq(bookCopies.bookId, id));
+        await tx.delete(books).where(eq(books.id, id));
+      });
     }
 
     await writeAuditLog({
@@ -656,6 +757,10 @@ export async function deleteBook(id: string): Promise<ActionResult> {
   }
 }
 
+function newRecordCode() {
+  return `REC-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+}
+
 export async function issueBook(input: IssueInput): Promise<ActionResult> {
   try {
     const { admin } = await assertAdmin();
@@ -676,10 +781,20 @@ export async function issueBook(input: IssueInput): Promise<ActionResult> {
         throw new Error("No active student was found with that college code.");
       }
 
-      const bookRows = await tx.select().from(books).where(eq(books.id, data.bookId)).limit(1);
-      const book = bookRows[0];
-      if (!book || book.archivedAt) throw new Error("That book is no longer in the catalogue.");
-      if (book.availableCopies < 1) throw new Error("No copies of this book are available.");
+      const copyRows = await tx
+        .select({ copy: bookCopies, book: books })
+        .from(bookCopies)
+        .innerJoin(books, eq(bookCopies.bookId, books.id))
+        .where(eq(bookCopies.id, data.copyId))
+        .limit(1);
+      const copy = copyRows[0]?.copy;
+      const book = copyRows[0]?.book;
+      if (!copy || copy.archivedAt || !book || book.archivedAt) {
+        throw new Error("That physical copy is no longer in the catalogue.");
+      }
+      if (copy.status !== "available") {
+        throw new Error(`Book ID ${copy.copyCode} is already issued. Choose another copy.`);
+      }
 
       const duplicate = await tx
         .select({ id: issueRecords.id })
@@ -687,7 +802,7 @@ export async function issueBook(input: IssueInput): Promise<ActionResult> {
         .where(
           and(
             eq(issueRecords.studentId, student.id),
-            eq(issueRecords.bookId, data.bookId),
+            eq(issueRecords.bookId, book.id),
             eq(issueRecords.status, "issued"),
           ),
         )
@@ -696,20 +811,27 @@ export async function issueBook(input: IssueInput): Promise<ActionResult> {
         throw new Error("This student already has an active issue record for this book.");
       }
 
+      const claimed = await tx
+        .update(bookCopies)
+        .set({ status: "issued", updatedAt: new Date() })
+        .where(and(eq(bookCopies.id, copy.id), eq(bookCopies.status, "available")))
+        .returning({ id: bookCopies.id });
+      if (!claimed[0]) throw new Error("That physical copy was just issued. Choose another copy.");
+
       const updated = await tx
         .update(books)
         .set({ availableCopies: sql`${books.availableCopies} - 1`, updatedAt: new Date() })
-        .where(and(eq(books.id, data.bookId), gt(books.availableCopies, 0)))
+        .where(and(eq(books.id, book.id), gt(books.availableCopies, 0)))
         .returning({ availableCopies: books.availableCopies });
       if (!updated[0]) throw new Error("No copies of this book are available.");
 
-      const recordCode = `REC-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
       const inserted = await tx
         .insert(issueRecords)
         .values({
-          recordCode,
+          recordCode: newRecordCode(),
           studentId: student.id,
           bookId: book.id,
+          copyId: copy.id,
           issueDate: data.issueDate,
           dueDate: data.dueDate,
           status: "issued",
@@ -723,6 +845,7 @@ export async function issueBook(input: IssueInput): Promise<ActionResult> {
         studentName: student.fullName,
         collegeCode: student.collegeCode,
         bookTitle: book.title,
+        copyCode: copy.copyCode,
       };
     });
 
@@ -737,6 +860,7 @@ export async function issueBook(input: IssueInput): Promise<ActionResult> {
         collegeCode: result.collegeCode,
         student: result.studentName,
         book: result.bookTitle,
+        copyCode: result.copyCode,
         issueDate: data.issueDate,
         dueDate: data.dueDate,
       },
@@ -745,12 +869,168 @@ export async function issueBook(input: IssueInput): Promise<ActionResult> {
     revalidateLibrary();
     return {
       ok: true,
-      message: `"${result.bookTitle}" issued to ${result.studentName} (${result.collegeCode}).`,
+      message: `"${result.bookTitle}" (${result.copyCode}) issued to ${result.studentName} (${result.collegeCode}).`,
       id: result.record?.id,
     };
   } catch (error) {
     return fail(
       error instanceof Error ? error.message : "Could not issue the book. Please try again.",
+    );
+  }
+}
+
+export async function issueNewBook(input: NewBookIssueInput): Promise<ActionResult> {
+  try {
+    const { admin } = await assertAdmin();
+    const parsed = newBookIssueSchema.safeParse(input);
+    if (!parsed.success) return fail(firstError(parsed.error));
+    const data = parsed.data;
+    if (data.dueDate < data.issueDate) return fail("The due date must be on or after the issue date.");
+    const bookCode = data.bookCode.toUpperCase();
+
+    const result = await db.transaction(async (tx) => {
+      const collegeCode = data.collegeCode.toUpperCase();
+      const studentRows = await tx
+        .select()
+        .from(students)
+        .where(eq(students.collegeCode, collegeCode))
+        .limit(1);
+      const student = studentRows[0];
+      if (!student || student.archivedAt || student.status !== "active") {
+        throw new Error("No active student was found with that college code.");
+      }
+
+      const duplicate = await tx
+        .select({ id: bookCopies.id })
+        .from(bookCopies)
+        .where(eq(bookCopies.copyCode, bookCode))
+        .limit(1);
+      if (duplicate[0]) {
+        throw new Error(`Book ID ${bookCode} already exists. Every physical copy needs a unique ID.`);
+      }
+
+      const matching = await tx
+        .select()
+        .from(books)
+        .where(
+          and(
+            isNull(books.archivedAt),
+            sql`lower(${books.title}) = lower(${data.title})`,
+            sql`lower(${books.author}) = lower(${data.author})`,
+            sql`lower(${books.edition}) = lower(${data.edition})`,
+          ),
+        )
+        .limit(1);
+
+      let bookId: string;
+      let bookTitle: string;
+      let catalogueReused = false;
+
+      if (matching[0]) {
+        catalogueReused = true;
+        bookId = matching[0].id;
+        bookTitle = matching[0].title;
+        await tx
+          .update(books)
+          .set({ totalCopies: sql`${books.totalCopies} + 1`, updatedAt: new Date() })
+          .where(eq(books.id, bookId));
+      } else {
+        const inserted = await tx
+          .insert(books)
+          .values({
+            bookCode,
+            title: data.title,
+            author: data.author,
+            publisher: data.publisher,
+            edition: data.edition,
+            category: data.category,
+            totalCopies: 1,
+            availableCopies: 0,
+            shelfNumber: data.shelfNumber,
+          })
+          .returning({ id: books.id, title: books.title });
+        bookId = inserted[0].id;
+        bookTitle = inserted[0].title;
+      }
+
+      const copyInserted = await tx
+        .insert(bookCopies)
+        .values({
+          copyCode: bookCode,
+          bookId,
+          shelfNumber: data.shelfNumber,
+          status: "issued",
+        })
+        .returning({ id: bookCopies.id, copyCode: bookCopies.copyCode });
+
+      const copy = copyInserted[0];
+      if (!copy) throw new Error("Could not register the physical copy. Please try again.");
+
+      const recordInserted = await tx
+        .insert(issueRecords)
+        .values({
+          recordCode: newRecordCode(),
+          studentId: student.id,
+          bookId,
+          copyId: copy.id,
+          issueDate: data.issueDate,
+          dueDate: data.dueDate,
+          status: "issued",
+          issuedBy: admin.userId,
+          notes: data.notes || null,
+        })
+        .returning({ id: issueRecords.id, recordCode: issueRecords.recordCode });
+
+      return {
+        record: recordInserted[0],
+        bookId,
+        bookTitle,
+        bookCode,
+        catalogueReused,
+        studentName: student.fullName,
+        collegeCode: student.collegeCode,
+      };
+    });
+
+    await writeAuditLog({
+      actorUserId: admin.userId,
+      actorName: admin.fullName,
+      action: "issue.create",
+      entityType: "issue_record",
+      entityId: result.record?.id,
+      details: {
+        recordCode: result.record?.recordCode,
+        collegeCode: result.collegeCode,
+        student: result.studentName,
+        book: result.bookTitle,
+        copyCode: result.bookCode,
+        newBookRegisteredDuringIssue: true,
+        catalogueReused: result.catalogueReused,
+        issueDate: data.issueDate,
+        dueDate: data.dueDate,
+      },
+    });
+
+    if (!result.catalogueReused) {
+      await writeAuditLog({
+        actorUserId: admin.userId,
+        actorName: admin.fullName,
+        action: "book.create",
+        entityType: "book",
+        entityId: result.bookId,
+        details: { bookCode: result.bookCode, title: result.bookTitle, source: "issue_desk" },
+      });
+    }
+
+    revalidateLibrary();
+    return {
+      ok: true,
+      message: `Book ID ${result.bookCode} registered and "${result.bookTitle}" issued to ${result.studentName} (${result.collegeCode}).`,
+      id: result.record?.id,
+    };
+  } catch (error) {
+    return fail(
+      error instanceof Error ? error.message : "Could not add and issue the book. Please try again.",
     );
   }
 }
@@ -780,6 +1060,13 @@ export async function markReturned(recordId: string, returnDate?: string): Promi
           updatedAt: new Date(),
         })
         .where(eq(issueRecords.id, recordId));
+
+      if (record.copyId) {
+        await tx
+          .update(bookCopies)
+          .set({ status: "available", updatedAt: new Date() })
+          .where(eq(bookCopies.id, record.copyId));
+      }
 
       await tx
         .update(books)
@@ -897,6 +1184,12 @@ export async function removeIssueRecord(recordId: string, reason: string): Promi
         .where(eq(issueRecords.id, recordId));
 
       if (record.status === "issued") {
+        if (record.copyId) {
+          await tx
+            .update(bookCopies)
+            .set({ status: "available", updatedAt: new Date() })
+            .where(eq(bookCopies.id, record.copyId));
+        }
         await tx
           .update(books)
           .set({
@@ -938,7 +1231,13 @@ export async function restoreArchivedBook(id: string): Promise<ActionResult> {
     const book = existing[0];
     if (!book) return fail("Book not found.");
 
-    await db.update(books).set({ archivedAt: null, updatedAt: new Date() }).where(eq(books.id, id));
+    await db.transaction(async (tx) => {
+      await tx.update(books).set({ archivedAt: null, updatedAt: new Date() }).where(eq(books.id, id));
+      await tx
+        .update(bookCopies)
+        .set({ archivedAt: null, updatedAt: new Date() })
+        .where(eq(bookCopies.bookId, id));
+    });
     await writeAuditLog({
       actorUserId: admin.userId,
       actorName: admin.fullName,

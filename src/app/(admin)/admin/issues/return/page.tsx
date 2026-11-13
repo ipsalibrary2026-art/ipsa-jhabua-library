@@ -8,7 +8,7 @@ import {
   Undo2,
   UserRound,
 } from "lucide-react";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import { ReturnBookButton } from "@/components/admin/return-book-button";
 import { EmptyState } from "@/components/library/empty-state";
@@ -18,7 +18,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { db } from "@/lib/db";
-import { books, courses, issueRecords, students } from "@/lib/db/schema";
+import { bookCopies, books, courses, issueRecords, students } from "@/lib/db/schema";
 import { formatDate, isOverdue, overdueDays } from "@/lib/dates";
 
 export const metadata = { title: "Return Book" };
@@ -51,11 +51,12 @@ export default async function ReturnBookPage({
           dueDate: issueRecords.dueDate,
           status: issueRecords.status,
           bookTitle: books.title,
-          bookCode: books.bookCode,
+          bookCode: sql<string>`coalesce(${bookCopies.copyCode}, ${books.bookCode})`,
           author: books.author,
         })
         .from(issueRecords)
         .innerJoin(books, eq(issueRecords.bookId, books.id))
+        .leftJoin(bookCopies, eq(issueRecords.copyId, bookCopies.id))
         .where(and(eq(issueRecords.studentId, record.student.id), eq(issueRecords.status, "issued")))
         .orderBy(asc(issueRecords.dueDate))
     : [];

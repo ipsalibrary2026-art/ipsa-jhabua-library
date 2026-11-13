@@ -6,6 +6,7 @@ import {
   eq,
   gt,
   ilike,
+  inArray,
   isNotNull,
   isNull,
   or,
@@ -22,7 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { db } from "@/lib/db";
-import { books } from "@/lib/db/schema";
+import { bookCopies, books } from "@/lib/db/schema";
 
 export const metadata = { title: "Book Management" };
 
@@ -85,6 +86,26 @@ export default async function BooksPage({
       .from(books)
       .where(isNull(books.archivedAt)),
   ]);
+
+  const copyRows =
+    rows.length > 0
+      ? await db
+          .select({
+            bookId: bookCopies.bookId,
+            copyCode: bookCopies.copyCode,
+            status: bookCopies.status,
+          })
+          .from(bookCopies)
+          .where(inArray(bookCopies.bookId, rows.map((book) => book.id)))
+          .orderBy(asc(bookCopies.copyCode))
+      : [];
+
+  const copiesByBook = new Map<string, { copyCode: string; status: string }[]>();
+  for (const copy of copyRows) {
+    const list = copiesByBook.get(copy.bookId) ?? [];
+    list.push({ copyCode: copy.copyCode, status: copy.status });
+    copiesByBook.set(copy.bookId, list);
+  }
 
   const total = countRows[0]?.count ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -262,7 +283,19 @@ export default async function BooksPage({
                           </Badge>
                         ) : null}
                       </td>
-                      <td className="px-3 py-3 font-mono text-xs text-slate-700">{book.bookCode}</td>
+                      <td className="px-3 py-3">
+                        <p className="font-mono text-xs font-medium text-slate-700">
+                          {book.bookCode}
+                        </p>
+                        {(copiesByBook.get(book.id)?.length ?? 0) > 1 ? (
+                          <p className="mt-1 max-w-40 text-[11px] leading-relaxed text-slate-500">
+                            {copiesByBook
+                              .get(book.id)
+                              ?.map((copy) => copy.copyCode)
+                              .join(", ")}
+                          </p>
+                        ) : null}
+                      </td>
                       <td className="px-3 py-3 text-slate-700">{book.category}</td>
                       <td className="px-3 py-3">
                         <div className="w-28">
@@ -297,7 +330,6 @@ export default async function BooksPage({
                             publisher: book.publisher,
                             edition: book.edition,
                             category: book.category,
-                            totalCopies: book.totalCopies,
                             shelfNumber: book.shelfNumber,
                           }}
                           categories={categories}
@@ -318,6 +350,14 @@ export default async function BooksPage({
                       <p className="font-medium text-slate-900">{book.title}</p>
                       <p className="text-xs text-slate-500">
                         {book.author} · <span className="font-mono">{book.bookCode}</span>
+                        {(copiesByBook.get(book.id)?.length ?? 0) > 1 ? (
+                          <span className="block text-[11px] text-slate-400">
+                            {copiesByBook
+                              .get(book.id)
+                              ?.map((copy) => copy.copyCode)
+                              .join(", ")}
+                          </span>
+                        ) : null}
                       </p>
                     </div>
                     {book.archivedAt ? (
@@ -356,7 +396,6 @@ export default async function BooksPage({
                         publisher: book.publisher,
                         edition: book.edition,
                         category: book.category,
-                        totalCopies: book.totalCopies,
                         shelfNumber: book.shelfNumber,
                       }}
                       categories={categories}

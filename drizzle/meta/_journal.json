@@ -15,6 +15,13 @@
       "when": 1794460771853,
       "tag": "0001_salty_pestilence",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794544033988,
+      "tag": "0002_robust_black_knight",
+      "breakpoints": true
     }
   ]
 }

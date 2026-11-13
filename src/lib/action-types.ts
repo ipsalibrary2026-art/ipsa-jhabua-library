@@ -21,13 +21,26 @@ export type BookInput = {
   publisher: string;
   edition: string;
   category: string;
-  totalCopies: number;
   shelfNumber: string;
 };
 
 export type IssueInput = {
   collegeCode: string;
-  bookId: string;
+  copyId: string;
+  issueDate: string;
+  dueDate: string;
+  notes?: string;
+};
+
+export type NewBookIssueInput = {
+  collegeCode: string;
+  bookCode: string;
+  title: string;
+  author: string;
+  publisher: string;
+  edition: string;
+  category: string;
+  shelfNumber: string;
   issueDate: string;
   dueDate: string;
   notes?: string;

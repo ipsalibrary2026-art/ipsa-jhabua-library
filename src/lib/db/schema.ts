@@ -17,6 +17,7 @@ import { user } from "./auth-schema";
 
 export const studentStatusEnum = pgEnum("student_status", ["active", "inactive"]);
 export const issueStatusEnum = pgEnum("issue_status", ["issued", "returned", "removed"]);
+export const bookCopyStatusEnum = pgEnum("book_copy_status", ["available", "issued"]);
 
 export const courses = pgTable("courses", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -88,6 +89,26 @@ export const books = pgTable(
   ],
 );
 
+export const bookCopies = pgTable(
+  "book_copies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    copyCode: text("copy_code").notNull().unique(),
+    bookId: uuid("book_id")
+      .notNull()
+      .references(() => books.id, { onDelete: "cascade" }),
+    shelfNumber: text("shelf_number").notNull(),
+    status: bookCopyStatusEnum("status").notNull().default("available"),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("book_copies_book_idx").on(table.bookId),
+    index("book_copies_status_idx").on(table.status),
+  ],
+);
+
 export const issueRecords = pgTable(
   "issue_records",
   {
@@ -99,6 +120,7 @@ export const issueRecords = pgTable(
     bookId: uuid("book_id")
       .notNull()
       .references(() => books.id, { onDelete: "restrict" }),
+    copyId: uuid("copy_id").references(() => bookCopies.id, { onDelete: "restrict" }),
     issueDate: date("issue_date", { mode: "string" }).notNull(),
     dueDate: date("due_date", { mode: "string" }).notNull(),
     returnDate: date("return_date", { mode: "string" }),
@@ -112,10 +134,14 @@ export const issueRecords = pgTable(
   (table) => [
     index("issue_records_student_idx").on(table.studentId),
     index("issue_records_book_idx").on(table.bookId),
+    index("issue_records_copy_idx").on(table.copyId),
     index("issue_records_status_idx").on(table.status),
     uniqueIndex("issue_records_active_unique")
       .on(table.studentId, table.bookId)
       .where(sql`${table.status} = 'issued'`),
+    uniqueIndex("issue_records_active_copy_unique")
+      .on(table.copyId)
+      .where(sql`${table.status} = 'issued' and ${table.copyId} is not null`),
   ],
 );
 
@@ -148,6 +174,15 @@ export const studentRelations = relations(students, ({ one, many }) => ({
 }));
 
 export const bookRelations = relations(books, ({ many }) => ({
+  copies: many(bookCopies),
+  issueRecords: many(issueRecords),
+}));
+
+export const bookCopyRelations = relations(bookCopies, ({ one, many }) => ({
+  book: one(books, {
+    fields: [bookCopies.bookId],
+    references: [books.id],
+  }),
   issueRecords: many(issueRecords),
 }));
 
@@ -159,6 +194,10 @@ export const issueRecordRelations = relations(issueRecords, ({ one }) => ({
   book: one(books, {
     fields: [issueRecords.bookId],
     references: [books.id],
+  }),
+  copy: one(bookCopies, {
+    fields: [issueRecords.copyId],
+    references: [bookCopies.id],
   }),
 }));
 
@@ -173,5 +212,6 @@ export type Course = typeof courses.$inferSelect;
 export type Admin = typeof admins.$inferSelect;
 export type Student = typeof students.$inferSelect;
 export type Book = typeof books.$inferSelect;
+export type BookCopy = typeof bookCopies.$inferSelect;
 export type IssueRecord = typeof issueRecords.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;

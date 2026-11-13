@@ -18,7 +18,7 @@ import { IssueStatusBadge } from "@/components/library/status-badge";
 import { StatCard } from "@/components/library/stat-card";
 import { Button } from "@/components/ui/button";
 import { db } from "@/lib/db";
-import { books, issueRecords } from "@/lib/db/schema";
+import { bookCopies, books, issueRecords } from "@/lib/db/schema";
 import { formatDate, isOverdue, overdueDays, todayISO } from "@/lib/dates";
 import { requireStudent } from "@/lib/session";
 
@@ -37,12 +37,13 @@ export default async function StudentDashboardPage() {
         dueDate: issueRecords.dueDate,
         status: issueRecords.status,
         bookTitle: books.title,
-        bookCode: books.bookCode,
+        bookCode: sql<string>`coalesce(${bookCopies.copyCode}, ${books.bookCode})`,
         author: books.author,
         shelfNumber: books.shelfNumber,
       })
       .from(issueRecords)
       .innerJoin(books, eq(issueRecords.bookId, books.id))
+      .leftJoin(bookCopies, eq(issueRecords.copyId, bookCopies.id))
       .where(and(eq(issueRecords.studentId, student.id), eq(issueRecords.status, "issued")))
       .orderBy(asc(issueRecords.dueDate)),
     db
@@ -53,10 +54,11 @@ export default async function StudentDashboardPage() {
         returnDate: issueRecords.returnDate,
         status: issueRecords.status,
         bookTitle: books.title,
-        bookCode: books.bookCode,
+        bookCode: sql<string>`coalesce(${bookCopies.copyCode}, ${books.bookCode})`,
       })
       .from(issueRecords)
       .innerJoin(books, eq(issueRecords.bookId, books.id))
+      .leftJoin(bookCopies, eq(issueRecords.copyId, bookCopies.id))
       .where(and(eq(issueRecords.studentId, student.id), eq(issueRecords.status, "returned")))
       .orderBy(desc(issueRecords.returnDate))
       .limit(5),

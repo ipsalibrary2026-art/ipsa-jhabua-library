@@ -29,7 +29,6 @@ export type EditableBook = {
   publisher: string;
   edition: string;
   category: string;
-  totalCopies: number;
   shelfNumber: string;
 };
 
@@ -53,7 +52,6 @@ export function BookFormDialog({
     publisher: book?.publisher ?? "",
     edition: book?.edition ?? "",
     category: book?.category ?? "",
-    totalCopies: book?.totalCopies ?? 1,
     shelfNumber: book?.shelfNumber ?? "",
   });
 
@@ -82,7 +80,6 @@ export function BookFormDialog({
           publisher: "",
           edition: "",
           category: "",
-          totalCopies: 1,
           shelfNumber: "",
         });
       }
@@ -104,8 +101,8 @@ export function BookFormDialog({
           <DialogTitle>{isEditing ? "Edit book" : "Add new book"}</DialogTitle>
           <DialogDescription>
             {isEditing
-              ? "Update the catalogue entry. Available copies adjust automatically for active loans."
-              : "Add a title to the library catalogue and set how many copies are held."}
+              ? "Update the catalogue entry. Book ID is the unique ID of the primary physical copy."
+              : "Add a title to the catalogue and register its first physical copy. Every copy needs its own unique Book ID."}
           </DialogDescription>
         </DialogHeader>
 
@@ -118,7 +115,7 @@ export function BookFormDialog({
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="book-code">Book ID</Label>
+              <Label htmlFor="book-code">Book ID (physical copy)</Label>
               <Input
                 id="book-code"
                 value={form.bookCode}
@@ -129,6 +126,7 @@ export function BookFormDialog({
                 required
                 className="uppercase placeholder:normal-case"
               />
+              <p className="text-xs text-slate-500">Duplicate Book IDs are rejected.</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="book-title">Book name</Label>
@@ -185,18 +183,6 @@ export function BookFormDialog({
                   <option key={category} value={category} />
                 ))}
               </datalist>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="book-copies">Total copies</Label>
-              <Input
-                id="book-copies"
-                type="number"
-                min={1}
-                max={999}
-                value={form.totalCopies}
-                onChange={(event) => update("totalCopies", Number(event.target.value))}
-                required
-              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="book-shelf">Shelf / rack number</Label>

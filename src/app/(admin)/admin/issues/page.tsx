@@ -28,7 +28,7 @@ import { IssueStatusBadge } from "@/components/library/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { db } from "@/lib/db";
-import { books, courses, issueRecords, students } from "@/lib/db/schema";
+import { bookCopies, books, courses, issueRecords, students } from "@/lib/db/schema";
 import { formatDate, overdueDays, todayISO } from "@/lib/dates";
 
 export const metadata = { title: "Issue Records" };
@@ -74,6 +74,7 @@ export default async function IssueRecordsPage({
       ilike(students.collegeCode, term),
       ilike(books.title, term),
       ilike(books.bookCode, term),
+      ilike(bookCopies.copyCode, term),
       ilike(issueRecords.recordCode, term),
     );
     if (search) filters.push(search);
@@ -90,6 +91,7 @@ export default async function IssueRecordsPage({
       .from(issueRecords)
       .innerJoin(students, eq(issueRecords.studentId, students.id))
       .innerJoin(books, eq(issueRecords.bookId, books.id))
+      .leftJoin(bookCopies, eq(issueRecords.copyId, bookCopies.id))
       .where(where),
     db
       .select({
@@ -104,12 +106,13 @@ export default async function IssueRecordsPage({
         collegeCode: students.collegeCode,
         courseName: courses.name,
         bookTitle: books.title,
-        bookCode: books.bookCode,
+        bookCode: sql<string>`coalesce(${bookCopies.copyCode}, ${books.bookCode})`,
         author: books.author,
       })
       .from(issueRecords)
       .innerJoin(students, eq(issueRecords.studentId, students.id))
       .innerJoin(books, eq(issueRecords.bookId, books.id))
+      .leftJoin(bookCopies, eq(issueRecords.copyId, bookCopies.id))
       .innerJoin(courses, eq(students.courseId, courses.id))
       .where(where)
       .orderBy(desc(issueRecords.createdAt))

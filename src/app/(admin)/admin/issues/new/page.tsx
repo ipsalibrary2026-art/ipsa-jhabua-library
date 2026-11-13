@@ -8,7 +8,7 @@ import {
   Undo2,
   UserRound,
 } from "lucide-react";
-import { and, asc, eq, gt, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import { IssueBookForm } from "@/components/admin/issue-book-form";
 import { PageHeader } from "@/components/library/page-header";
@@ -17,7 +17,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { db } from "@/lib/db";
-import { books, courses, issueRecords, students } from "@/lib/db/schema";
+import { bookCopies, books, courses, issueRecords, students } from "@/lib/db/schema";
 import { formatDate } from "@/lib/dates";
 
 export const metadata = { title: "Issue Book" };
@@ -30,12 +30,32 @@ export default async function IssueBookPage({
   const params = await searchParams;
   const code = params.code?.trim().toUpperCase() ?? "";
 
-  const [availableBooks, studentRows] = await Promise.all([
+  const [availableCopies, categories, studentRows] = await Promise.all([
     db
-      .select()
+      .select({
+        copyId: bookCopies.id,
+        copyCode: bookCopies.copyCode,
+        shelfNumber: bookCopies.shelfNumber,
+        bookId: books.id,
+        title: books.title,
+        author: books.author,
+        category: books.category,
+      })
+      .from(bookCopies)
+      .innerJoin(books, eq(bookCopies.bookId, books.id))
+      .where(
+        and(
+          eq(bookCopies.status, "available"),
+          isNull(bookCopies.archivedAt),
+          isNull(books.archivedAt),
+        ),
+      )
+      .orderBy(asc(books.title), asc(bookCopies.copyCode)),
+    db
+      .selectDistinct({ category: books.category })
       .from(books)
-      .where(and(isNull(books.archivedAt), gt(books.availableCopies, 0)))
-      .orderBy(asc(books.title)),
+      .where(isNull(books.archivedAt))
+      .orderBy(asc(books.category)),
     code
       ? db
           .select({ student: students, course: courses })
@@ -55,10 +75,11 @@ export default async function IssueBookPage({
           status: issueRecords.status,
           bookId: issueRecords.bookId,
           bookTitle: books.title,
-          bookCode: books.bookCode,
+          bookCode: sql<string>`coalesce(${bookCopies.copyCode}, ${books.bookCode})`,
         })
         .from(issueRecords)
         .innerJoin(books, eq(issueRecords.bookId, books.id))
+        .leftJoin(bookCopies, eq(issueRecords.copyId, bookCopies.id))
         .where(
           and(eq(issueRecords.studentId, record.student.id), eq(issueRecords.status, "issued")),
         )
@@ -201,16 +222,6 @@ export default async function IssueBookPage({
                 <p className="text-sm text-slate-600">
                   This account must be active before a book can be issued.
                 </p>
-              ) : availableBooks.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-center">
-                  <p className="text-sm font-medium text-slate-900">No copies available</p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Every book is currently on loan. Return a copy or add more stock first.
-                  </p>
-                  <Button variant="outline" size="sm" asChild className="mt-3">
-                    <Link href="/admin/books">Manage books</Link>
-                  </Button>
-                </div>
               ) : (
                 <IssueBookForm
                   student={{
@@ -219,14 +230,8 @@ export default async function IssueBookPage({
                     courseName: record.course.name,
                     semester: record.student.semester,
                   }}
-                  books={availableBooks.map((book) => ({
-                    id: book.id,
-                    bookCode: book.bookCode,
-                    title: book.title,
-                    author: book.author,
-                    availableCopies: book.availableCopies,
-                    shelfNumber: book.shelfNumber,
-                  }))}
+                  copies={availableCopies}
+                  categories={categories.map((item) => item.category)}
                   activeBookIds={activeBookIds}
                 />
               )}

@@ -1,12 +1,13 @@
 import "dotenv/config";
 
-import { eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 
 import { auth } from "./auth";
 import { db } from "./index";
 import {
   admins,
   auditLogs,
+  bookCopies,
   books,
   courses,
   issueRecords,
@@ -270,16 +271,32 @@ async function ensureStudent(entry: (typeof studentSeed)[number], courseMap: Map
 
 async function ensureBook(entry: (typeof bookSeed)[number]) {
   const existing = await db.select().from(books).where(eq(books.bookCode, entry.bookCode));
-  if (existing.length > 0) return existing[0];
+  const book =
+    existing[0] ??
+    (
+      await db
+        .insert(books)
+        .values({
+          ...entry,
+          availableCopies: entry.totalCopies,
+        })
+        .returning()
+    )[0];
 
-  const inserted = await db
-    .insert(books)
-    .values({
-      ...entry,
-      availableCopies: entry.totalCopies,
-    })
-    .returning();
-  return inserted[0];
+  for (let index = 1; index <= Math.max(entry.totalCopies, 1); index += 1) {
+    const copyCode = index === 1 ? entry.bookCode : `${entry.bookCode}-C${index}`;
+    await db
+      .insert(bookCopies)
+      .values({
+        copyCode,
+        bookId: book.id,
+        shelfNumber: entry.shelfNumber,
+        status: "available",
+      })
+      .onConflictDoNothing();
+  }
+
+  return book;
 }
 
 async function ensureIssue(entry: {
@@ -299,8 +316,28 @@ async function ensureIssue(entry: {
     .where(eq(issueRecords.recordCode, entry.recordCode));
   if (existing.length > 0) return;
 
-  await db.insert(issueRecords).values(entry);
-  if (entry.status === "issued") {
+  const availableCopy = await db
+    .select()
+    .from(bookCopies)
+    .where(
+      and(
+        eq(bookCopies.bookId, entry.bookId),
+        entry.status === "issued"
+          ? eq(bookCopies.status, "available")
+          : sql`true`,
+      ),
+    )
+    .orderBy(asc(bookCopies.copyCode))
+    .limit(1);
+
+  const copyId = availableCopy[0]?.id ?? null;
+  await db.insert(issueRecords).values({ ...entry, copyId });
+
+  if (entry.status === "issued" && copyId) {
+    await db
+      .update(bookCopies)
+      .set({ status: "issued", updatedAt: new Date() })
+      .where(eq(bookCopies.id, copyId));
     await db
       .update(books)
       .set({ availableCopies: sql`${books.availableCopies} - 1`, updatedAt: new Date() })

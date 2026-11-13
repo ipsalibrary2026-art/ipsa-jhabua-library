@@ -21,7 +21,7 @@ import { StatCard } from "@/components/library/stat-card";
 import { AccountStatusBadge, IssueStatusBadge } from "@/components/library/status-badge";
 import { Button } from "@/components/ui/button";
 import { db } from "@/lib/db";
-import { books, courses, issueRecords, students } from "@/lib/db/schema";
+import { bookCopies, books, courses, issueRecords, students } from "@/lib/db/schema";
 import { formatDate, isOverdue, todayISO } from "@/lib/dates";
 
 export const metadata = { title: "Student Profile" };
@@ -57,11 +57,12 @@ export default async function StudentProfilePage({
         returnDate: issueRecords.returnDate,
         status: issueRecords.status,
         bookTitle: books.title,
-        bookCode: books.bookCode,
+        bookCode: sql<string>`coalesce(${bookCopies.copyCode}, ${books.bookCode})`,
         author: books.author,
       })
       .from(issueRecords)
       .innerJoin(books, eq(issueRecords.bookId, books.id))
+      .leftJoin(bookCopies, eq(issueRecords.copyId, bookCopies.id))
       .where(eq(issueRecords.studentId, student.id))
       .orderBy(sql`case when ${issueRecords.status} = 'issued' then 0 else 1 end`, sql`${issueRecords.issueDate} desc`),
     db
